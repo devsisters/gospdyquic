@@ -118,7 +118,7 @@ type SpdyStream struct {
 	buffer        bytes.Buffer
 }
 
-func (stream *SpdyStream) ProcessData(newBytes []byte) int {
+func (stream *SpdyStream) ProcessData(serverStream *goquic.QuicSpdyServerStream, newBytes []byte) int {
 	fmt.Println("========================================================== ProcessData:", newBytes)
 
 	stream.buffer.Write(newBytes)
@@ -151,7 +151,7 @@ func (stream *SpdyStream) ProcessData(newBytes []byte) int {
 	return len(newBytes)
 }
 
-func (stream *SpdyStream) OnFinRead() {
+func (stream *SpdyStream) OnFinRead(serverStream *goquic.QuicSpdyServerStream) {
 	fmt.Println("========================================================== OnFinRead")
 
 	if !stream.header_parsed {
@@ -162,6 +162,17 @@ func (stream *SpdyStream) OnFinRead() {
 	fmt.Println("stream.buffer:", stream.buffer.Bytes())
 	fmt.Println("stream.buffer len:", stream.buffer.Len())
 	fmt.Println("stream.buffer as string:", string(stream.buffer.Bytes()[:]))
+
+	var fake_headers map[string]string = make(map[string]string)
+	// headergenerate
+	fake_headers[":status"] = "200 OK"
+	fake_headers[":version"] = "HTTP/1.1"
+	fake_headers["content-type"] = "text/html"
+
+	//
+	respBody := fmt.Sprintln("<html><body><h1>Hello, World!</h1><pre>", stream.headers, "</pre></body></html>")
+	serverStream.WriteHeaders(fake_headers, false)
+	serverStream.WriteOrBufferData([]byte(respBody))
 }
 
 type SpdySession struct {
@@ -175,15 +186,13 @@ func (s *SpdySession) CreateIncomingDataStream(stream_id uint32) goquic.DataStre
 	return stream
 }
 
-func CreateSpdySession() goquic.DataStreamCreator {
-	return &SpdySession{}
-}
-
 func main() {
-	fmt.Printf("hello, world\n")
 	goquic.Initialize()
 	goquic.SetLogLevel(-1)
-	//C.test_quic()
+
+	createSpdySession := func() goquic.DataStreamCreator {
+		return &SpdySession{}
+	}
 
 	buf := make([]byte, 65535)
 	listen_addr := net.UDPAddr{
@@ -194,7 +203,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	dispatcher := goquic.CreateQuicDispatcher(conn, CreateSpdySession)
+	dispatcher := goquic.CreateQuicDispatcher(conn, createSpdySession)
 	for {
 		n, peer_addr, err := conn.ReadFromUDP(buf)
 

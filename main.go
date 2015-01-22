@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"goquic"
 	"io"
+	"log"
 	"net"
 	"net/http"
+	"net/url"
+	"time"
 )
 
 /* ------------ SPDY Parsing (from SlyMarbo/spdy ) ----------- */
@@ -53,8 +56,8 @@ func ParseHeaders(reader io.Reader) (http.Header, error) {
 	}
 	numNameValuePairs := bytesToInt(pairs)
 
-	headers := make(http.Header)
-	bounds := MAX_FRAME_SIZE - 12 // Maximum frame size minus maximum non-headers data (SYN_STREAM)
+	header := make(http.Header)
+	bounds := MAX_FRAME_SIZE - 12 // Maximum frame size minus maximum non-header data (SYN_STREAM)
 	for i := 0; i < numNameValuePairs; i++ {
 		var nameLength, valueLength int
 
@@ -100,11 +103,11 @@ func ParseHeaders(reader io.Reader) (http.Header, error) {
 
 		// Split the value on null boundaries.
 		for _, value := range bytes.Split(values, []byte{'\x00'}) {
-			headers.Add(string(name), string(value))
+			header.Add(string(name), string(value))
 		}
 	}
 
-	return headers, nil
+	return header, nil
 }
 
 /* ----------- End SPDY Parsing (from SlyMarbo/spdy ) --------- */
@@ -113,9 +116,40 @@ func ParseHeaders(reader io.Reader) (http.Header, error) {
 
 type SpdyStream struct {
 	stream_id     uint32
-	headers       http.Header
+	header        http.Header
 	header_parsed bool
 	buffer        bytes.Buffer
+	server        *QuicSpdyServer
+}
+
+type spdyResponseWriter struct {
+	serverStream *goquic.QuicSpdyServerStream
+	header       http.Header
+	wroteHeader  bool
+}
+
+func (w *spdyResponseWriter) Header() http.Header {
+	return w.header
+}
+
+func (w *spdyResponseWriter) Write(buffer []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+
+	w.serverStream.WriteOrBufferData(buffer)
+	return len(buffer), nil
+}
+
+func (w *spdyResponseWriter) WriteHeader(statusCode int) {
+	if w.wroteHeader {
+		return
+	}
+	w.header.Set(":status", fmt.Sprintf("%d %s", statusCode, http.StatusText(statusCode))) // TODO(serialx): Do a proper status code return
+	w.header.Set(":version", "HTTP/1.1")
+
+	w.serverStream.WriteHeader(w.header, false)
+	w.wroteHeader = true
 }
 
 func (stream *SpdyStream) ProcessData(serverStream *goquic.QuicSpdyServerStream, newBytes []byte) int {
@@ -126,7 +160,7 @@ func (stream *SpdyStream) ProcessData(serverStream *goquic.QuicSpdyServerStream,
 	if !stream.header_parsed {
 		// We don't want to consume the buffer *yet*, so create a new reader
 		reader := bytes.NewReader(stream.buffer.Bytes())
-		headers, err := ParseHeaders(reader)
+		header, err := ParseHeaders(reader)
 		if err != nil {
 			// Header parsing unsuccessful, maybe header is not yet completely received
 			// Append it to the buffer for parsing later
@@ -139,8 +173,10 @@ func (stream *SpdyStream) ProcessData(serverStream *goquic.QuicSpdyServerStream,
 		stream.buffer.Next(int(n))
 
 		stream.header_parsed = true
-		stream.headers = headers
-		fmt.Println("headers:", stream.headers)
+		stream.header = header
+		fmt.Println("header:", stream.header)
+
+		// TODO(serialx): Parsing header should also exist on OnFinRead
 	}
 
 	// Process body
@@ -158,58 +194,132 @@ func (stream *SpdyStream) OnFinRead(serverStream *goquic.QuicSpdyServerStream) {
 		// TODO(serialx): Send error message
 	}
 
-	fmt.Println("headers:", stream.headers)
+	fmt.Println("header:", stream.header)
 	fmt.Println("stream.buffer:", stream.buffer.Bytes())
 	fmt.Println("stream.buffer len:", stream.buffer.Len())
 	fmt.Println("stream.buffer as string:", string(stream.buffer.Bytes()[:]))
 
-	var fake_headers map[string]string = make(map[string]string)
-	// headergenerate
-	fake_headers[":status"] = "200 OK"
-	fake_headers[":version"] = "HTTP/1.1"
-	fake_headers["content-type"] = "text/html"
+	//var fake_headers map[string]string = make(map[string]string)
+	//// headergenerate
+	//fake_headers[":status"] = "200 OK"
+	//fake_headers[":version"] = "HTTP/1.1"
+	//fake_headers["content-type"] = "text/html"
 
-	//
-	respBody := fmt.Sprintln("<html><body><h1>Hello, World!</h1><pre>", stream.headers, "</pre></body></html>")
-	serverStream.WriteHeaders(fake_headers, false)
-	serverStream.WriteOrBufferData([]byte(respBody))
+	////
+	//respBody := fmt.Sprintln("<html><body><h1>Hello, World!</h1><pre>", stream.headers, "</pre></body></html>")
+	//serverStream.WriteHeader(fake_headers, false)
+	//serverStream.WriteOrBufferData([]byte(respBody))
+
+	//rawUrl := header.Get(":scheme") + "://" + header.Get(":host") + header.Get(":path")
+	header := stream.header
+	req := new(http.Request)
+	req.Method = header.Get(":method")
+	req.RequestURI = header.Get(":path")
+	req.Proto = header.Get(":version")
+	req.Header = header
+	req.Host = header.Get(":host")
+	// req.RemoteAddr = serverStream. TODO(serialx): Add remote addr
+	req.URL = &url.URL{
+		Scheme: header.Get(":scheme"),
+		Host:   header.Get(":host"),
+		Path:   header.Get(":path"),
+	}
+
+	w := &spdyResponseWriter{
+		serverStream: serverStream,
+		header:       make(http.Header),
+	}
+	if stream.server.Handler != nil {
+		stream.server.Handler.ServeHTTP(w, req)
+	} else {
+		http.DefaultServeMux.ServeHTTP(w, req)
+	}
 }
 
 type SpdySession struct {
+	server *QuicSpdyServer
 }
 
 func (s *SpdySession) CreateIncomingDataStream(stream_id uint32) goquic.DataStreamProcessor {
 	stream := &SpdyStream{
 		stream_id:     stream_id,
 		header_parsed: false,
+		server:        s.server,
 	}
 	return stream
 }
 
-func main() {
+type QuicSpdyServer struct {
+	Addr           string
+	Handler        http.Handler
+	ReadTimeout    time.Duration
+	WriteTimeout   time.Duration
+	MaxHeaderBytes int
+	//TLSConfig *tls.Config
+}
+
+func (srv *QuicSpdyServer) ListenAndServe() error {
+	addr := srv.Addr
+	if addr == "" {
+		addr = ":http"
+	}
+
 	goquic.Initialize()
 	goquic.SetLogLevel(-1)
 
+	conn, err := net.ListenPacket("udp", addr)
+	if err != nil {
+		return err
+	}
+	udp_conn, ok := conn.(*net.UDPConn)
+	if !ok {
+		return errors.New("ListenPacket did not return net.UDPConn")
+	}
+
+	return srv.Serve(udp_conn)
+}
+
+func (srv *QuicSpdyServer) Serve(conn *net.UDPConn) error {
+	defer conn.Close()
+
+	listen_addr, err := net.ResolveUDPAddr("udp", conn.LocalAddr().String())
+	if err != nil {
+		// TODO(serialx): Don't panic and keep calm...
+		panic(err)
+	}
 	createSpdySession := func() goquic.DataStreamCreator {
-		return &SpdySession{}
+		return &SpdySession{server: srv}
 	}
 
 	buf := make([]byte, 65535)
-	listen_addr := net.UDPAddr{
-		Port: 8080,
-		IP:   net.ParseIP("0.0.0.0"),
-	}
-	conn, err := net.ListenUDP("udp4", &listen_addr)
-	if err != nil {
-		panic(err)
-	}
 	dispatcher := goquic.CreateQuicDispatcher(conn, createSpdySession)
 	for {
 		n, peer_addr, err := conn.ReadFromUDP(buf)
 
 		if err != nil {
+			// TODO(serialx): Don't panic and keep calm...
 			panic(err)
 		}
-		dispatcher.ProcessPacket(&listen_addr, peer_addr, buf[:n])
+		dispatcher.ProcessPacket(listen_addr, peer_addr, buf[:n])
+	}
+}
+
+func ListenAndServeQuicSpdyOnly(addr string, certFile string, keyFile string, handler http.Handler) error {
+	server := &QuicSpdyServer{Addr: addr, Handler: handler}
+	return server.ListenAndServe()
+}
+
+func httpHandler(w http.ResponseWriter, req *http.Request) {
+	w.Header().Set("Content-Type", "text/plain")
+	w.Write([]byte("This is an example server.\n"))
+}
+
+func main() {
+	http.HandleFunc("/", httpHandler)
+	http.Handle("/files/", http.StripPrefix("/files/", http.FileServer(http.Dir("/home/serialx/"))))
+	log.Printf("About to listen on 10443. Go to https://127.0.0.1:10443/")
+	err := ListenAndServeQuicSpdyOnly(":8080", "cert.pem", "key.pem", nil)
+	if err != nil {
+		log.Fatal(err)
 	}
 }

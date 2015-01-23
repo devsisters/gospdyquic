@@ -258,6 +258,7 @@ type QuicSpdyServer struct {
 	//TLSConfig *tls.Config
 }
 
+// TODO(hodduc) ListenAndServe() and Serve() should be moved to goquic side
 func (srv *QuicSpdyServer) ListenAndServe() error {
 	addr := srv.Addr
 	if addr == "" {
@@ -291,16 +292,45 @@ func (srv *QuicSpdyServer) Serve(conn *net.UDPConn) error {
 		return &SpdySession{server: srv}
 	}
 
-	buf := make([]byte, 65535)
-	dispatcher := goquic.CreateQuicDispatcher(conn, createSpdySession)
-	for {
-		n, peer_addr, err := conn.ReadFromUDP(buf)
+	type UDPData struct {
+		n    int
+		addr *net.UDPAddr
+	}
 
-		if err != nil {
-			// TODO(serialx): Don't panic and keep calm...
-			panic(err)
+	readChan := make(chan UDPData)
+	alarmChan := make(chan *goquic.GoQuicAlarm)
+	buf := make([]byte, 65536)
+
+	dispatcher := goquic.CreateQuicDispatcher(conn, createSpdySession, &goquic.TaskRunner{AlarmChan: alarmChan})
+
+	go func(readChan chan UDPData, buf []byte) {
+		for {
+			n, peer_addr, err := conn.ReadFromUDP(buf)
+			if err != nil {
+				// TODO(serialx): Don't panic and keep calm...
+				panic(err)
+			}
+			readChan <- UDPData{n, peer_addr}
 		}
-		dispatcher.ProcessPacket(listen_addr, peer_addr, buf[:n])
+	}(readChan, buf)
+
+	for {
+		select {
+		case result, ok := <-readChan:
+			fmt.Println(" ********** Triggered ProcessPacket")
+			if !ok {
+				break
+			}
+			dispatcher.ProcessPacket(listen_addr, result.addr, buf[:result.n])
+			fmt.Println(" ********** End ProcessPacket")
+		case alarm, ok := <-alarmChan:
+			fmt.Println(" ********** Triggered OnAlarm")
+			if !ok {
+				break
+			}
+			alarm.OnAlarm()
+			fmt.Println(" ********** End OnAlarm")
+		}
 	}
 }
 

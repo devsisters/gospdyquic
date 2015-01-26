@@ -137,7 +137,7 @@ func (w *spdyResponseWriter) Write(buffer []byte) (int, error) {
 		w.WriteHeader(http.StatusOK)
 	}
 
-	w.serverStream.WriteOrBufferData(buffer)
+	w.serverStream.WriteOrBufferData(buffer, false)
 	return len(buffer), nil
 }
 
@@ -234,6 +234,8 @@ func (stream *SpdyStream) OnFinRead(serverStream *goquic.QuicSpdyServerStream) {
 	} else {
 		http.DefaultServeMux.ServeHTTP(w, req)
 	}
+
+	serverStream.WriteOrBufferData(make([]byte, 0), true)
 }
 
 type SpdySession struct {
@@ -348,8 +350,11 @@ func ListenAndServeQuicSpdyOnly(addr string, certFile string, keyFile string, ha
 }
 
 func httpHandler(w http.ResponseWriter, req *http.Request) {
-	w.Header().Set("Content-Type", "text/plain")
-	w.Write([]byte("This is an example server.\n"))
+	w.Header().Set("Content-Type", "application/zip")
+	for i := 0; i < 5; i++ {
+		w.Write(make([]byte, 1000000))
+	}
+	//w.Write([]byte("This is an example server.\n"))
 }
 
 func main() {

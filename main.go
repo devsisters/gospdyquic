@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"goquic"
@@ -126,6 +127,12 @@ type spdyResponseWriter struct {
 	serverStream *goquic.QuicSpdyServerStream
 	header       http.Header
 	wroteHeader  bool
+}
+
+type udpData struct {
+	n    int
+	addr *net.UDPAddr
+	buf  []byte
 }
 
 func (w *spdyResponseWriter) Header() http.Header {
@@ -260,6 +267,8 @@ type QuicSpdyServer struct {
 	//TLSConfig *tls.Config
 }
 
+const numOfServers = 7
+
 // TODO(hodduc) ListenAndServe() and Serve() should be moved to goquic side
 func (srv *QuicSpdyServer) ListenAndServe() error {
 	addr := srv.Addr
@@ -268,7 +277,7 @@ func (srv *QuicSpdyServer) ListenAndServe() error {
 	}
 
 	goquic.Initialize()
-	goquic.SetLogLevel(-1)
+	//goquic.SetLogLevel(-1)
 
 	conn, err := net.ListenPacket("udp", addr)
 	if err != nil {
@@ -279,10 +288,45 @@ func (srv *QuicSpdyServer) ListenAndServe() error {
 		return errors.New("ListenPacket did not return net.UDPConn")
 	}
 
-	return srv.Serve(udp_conn)
+	var chanArray [numOfServers](chan udpData)
+
+	for i := 0; i < numOfServers; i++ {
+		channel := make(chan udpData)
+		go srv.Serve(udp_conn, channel)
+		chanArray[i] = channel
+	}
+
+	buf := make([]byte, 65535)
+
+	for {
+		n, peer_addr, err := udp_conn.ReadFromUDP(buf)
+		if err != nil {
+			// TODO(serialx): Don't panic and keep calm...
+			panic(err)
+		}
+
+		var connId uint64
+
+		switch buf[0] & 0xC {
+		case 0xC:
+			connId = binary.LittleEndian.Uint64(buf[1:9])
+		case 0x8:
+			connId = binary.LittleEndian.Uint64(buf[1:5])
+		case 0x4:
+			connId = binary.LittleEndian.Uint64(buf[1:2])
+		default:
+			connId = 0
+		}
+
+		fmt.Println("ConnId", connId, " ---- > ", connId%numOfServers)
+
+		chanArray[connId%numOfServers] <- udpData{n: n, addr: peer_addr, buf: buf[:]}
+		// TODO(hodduc): Minimize heap uses of buf
+		// TODO(hodduc): Smart Load Balancing
+	}
 }
 
-func (srv *QuicSpdyServer) Serve(conn *net.UDPConn) error {
+func (srv *QuicSpdyServer) Serve(conn *net.UDPConn, readChan chan udpData) error {
 	defer conn.Close()
 
 	listen_addr, err := net.ResolveUDPAddr("udp", conn.LocalAddr().String())
@@ -294,28 +338,10 @@ func (srv *QuicSpdyServer) Serve(conn *net.UDPConn) error {
 		return &SpdySession{server: srv}
 	}
 
-	type UDPData struct {
-		n    int
-		addr *net.UDPAddr
-	}
-
-	readChan := make(chan UDPData)
 	alarmChan := make(chan *goquic.GoQuicAlarm)
 	writeChan := make(chan *goquic.WriteCallback)
-	buf := make([]byte, 65536)
 
 	dispatcher := goquic.CreateQuicDispatcher(conn, createSpdySession, &goquic.TaskRunner{AlarmChan: alarmChan, WriteChan: writeChan})
-
-	go func(readChan chan UDPData, buf []byte) {
-		for {
-			n, peer_addr, err := conn.ReadFromUDP(buf)
-			if err != nil {
-				// TODO(serialx): Don't panic and keep calm...
-				panic(err)
-			}
-			readChan <- UDPData{n: n, addr: peer_addr}
-		}
-	}(readChan, buf)
 
 	for {
 		select {
@@ -324,8 +350,7 @@ func (srv *QuicSpdyServer) Serve(conn *net.UDPConn) error {
 			if !ok {
 				break
 			}
-			dispatcher.ProcessPacket(listen_addr, result.addr, buf[:result.n])
-			fmt.Println(" ********** End ProcessPacket")
+			dispatcher.ProcessPacket(listen_addr, result.addr, result.buf[:result.n])
 		case alarm, ok := <-alarmChan:
 			fmt.Println(" ********** Triggered OnAlarm")
 			if !ok {

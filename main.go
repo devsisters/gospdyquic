@@ -160,8 +160,6 @@ func (w *spdyResponseWriter) WriteHeader(statusCode int) {
 }
 
 func (stream *SpdyStream) ProcessData(serverStream *goquic.QuicSpdyServerStream, newBytes []byte) int {
-	fmt.Println("========================================================== ProcessData:", newBytes)
-
 	stream.buffer.Write(newBytes)
 
 	if !stream.header_parsed {
@@ -181,43 +179,18 @@ func (stream *SpdyStream) ProcessData(serverStream *goquic.QuicSpdyServerStream,
 
 		stream.header_parsed = true
 		stream.header = header
-		fmt.Println("header:", stream.header)
 
 		// TODO(serialx): Parsing header should also exist on OnFinRead
 	}
-
 	// Process body
-	fmt.Println("stream.buffer:", stream.buffer.Bytes())
-	fmt.Println("stream.buffer len:", stream.buffer.Len())
-	fmt.Println("stream.buffer as string:", string(stream.buffer.Bytes()[:]))
-
 	return len(newBytes)
 }
 
 func (stream *SpdyStream) OnFinRead(serverStream *goquic.QuicSpdyServerStream) {
-	fmt.Println("========================================================== OnFinRead")
-
 	if !stream.header_parsed {
 		// TODO(serialx): Send error message
 	}
 
-	fmt.Println("header:", stream.header)
-	fmt.Println("stream.buffer:", stream.buffer.Bytes())
-	fmt.Println("stream.buffer len:", stream.buffer.Len())
-	fmt.Println("stream.buffer as string:", string(stream.buffer.Bytes()[:]))
-
-	//var fake_headers map[string]string = make(map[string]string)
-	//// headergenerate
-	//fake_headers[":status"] = "200 OK"
-	//fake_headers[":version"] = "HTTP/1.1"
-	//fake_headers["content-type"] = "text/html"
-
-	////
-	//respBody := fmt.Sprintln("<html><body><h1>Hello, World!</h1><pre>", stream.headers, "</pre></body></html>")
-	//serverStream.WriteHeader(fake_headers, false)
-	//serverStream.WriteOrBufferData([]byte(respBody))
-
-	//rawUrl := header.Get(":scheme") + "://" + header.Get(":host") + header.Get(":path")
 	header := stream.header
 	req := new(http.Request)
 	req.Method = header.Get(":method")
@@ -346,25 +319,20 @@ func (srv *QuicSpdyServer) Serve(conn *net.UDPConn, readChan chan udpData) error
 	for {
 		select {
 		case result, ok := <-readChan:
-			fmt.Println(" ********** Triggered ProcessPacket")
 			if !ok {
 				break
 			}
 			dispatcher.ProcessPacket(listen_addr, result.addr, result.buf[:result.n])
 		case alarm, ok := <-alarmChan:
-			fmt.Println(" ********** Triggered OnAlarm")
 			if !ok {
 				break
 			}
 			alarm.OnAlarm()
-			fmt.Println(" ********** End OnAlarm")
 		case write, ok := <-writeChan:
-			fmt.Println(" ********** Triggered OnWriteComplete")
 			if !ok {
 				break
 			}
 			write.Callback()
-			fmt.Println(" ********** End OnWriteComplete")
 		}
 	}
 }

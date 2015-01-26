@@ -299,9 +299,10 @@ func (srv *QuicSpdyServer) Serve(conn *net.UDPConn) error {
 
 	readChan := make(chan UDPData)
 	alarmChan := make(chan *goquic.GoQuicAlarm)
+	writeChan := make(chan *goquic.WriteCallback)
 	buf := make([]byte, 65536)
 
-	dispatcher := goquic.CreateQuicDispatcher(conn, createSpdySession, &goquic.TaskRunner{AlarmChan: alarmChan})
+	dispatcher := goquic.CreateQuicDispatcher(conn, createSpdySession, &goquic.TaskRunner{AlarmChan: alarmChan, WriteChan: writeChan})
 
 	go func(readChan chan UDPData, buf []byte) {
 		for {
@@ -310,7 +311,7 @@ func (srv *QuicSpdyServer) Serve(conn *net.UDPConn) error {
 				// TODO(serialx): Don't panic and keep calm...
 				panic(err)
 			}
-			readChan <- UDPData{n, peer_addr}
+			readChan <- UDPData{n: n, addr: peer_addr}
 		}
 	}(readChan, buf)
 
@@ -330,6 +331,13 @@ func (srv *QuicSpdyServer) Serve(conn *net.UDPConn) error {
 			}
 			alarm.OnAlarm()
 			fmt.Println(" ********** End OnAlarm")
+		case write, ok := <-writeChan:
+			fmt.Println(" ********** Triggered OnWriteComplete")
+			if !ok {
+				break
+			}
+			write.Callback()
+			fmt.Println(" ********** End OnWriteComplete")
 		}
 	}
 }

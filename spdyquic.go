@@ -1,120 +1,19 @@
-package main
+package gospdyquic
 
 import (
 	"bytes"
 	"encoding/binary"
 	"errors"
-	"flag"
 	"fmt"
-	"goquic"
-	"io"
 	"io/ioutil"
-	"log"
 	"net"
 	"net/http"
-	"net/http/httputil"
 	"net/url"
 	"time"
+
+	"github.com/devsisters/goquic"
+	"github.com/devsisters/gospdyquic/spdy"
 )
-
-/* ------------ SPDY Parsing (from SlyMarbo/spdy ) ----------- */
-
-// ReadExactly is used to ensure that the given number of bytes
-// are read if possible, even if multiple calls to Read
-// are required.
-func ReadExactly(r io.Reader, i int) ([]byte, error) {
-	out := make([]byte, i)
-	in := out[:]
-	for i > 0 {
-		if r == nil {
-			return nil, errors.New("Error: Connection is nil.")
-		}
-		if n, err := r.Read(in); err != nil {
-			return nil, err
-		} else {
-			in = in[n:]
-			i -= n
-		}
-	}
-	return out, nil
-}
-
-func BytesToUint32(b []byte) uint32 {
-	return (uint32(b[0]) << 24) + (uint32(b[1]) << 16) + (uint32(b[2]) << 8) + uint32(b[3])
-}
-
-func ParseHeaders(reader io.Reader) (http.Header, error) {
-	// Maximum frame size (2 ** 24 -1).
-	const MAX_FRAME_SIZE = 0xffffff
-
-	// SPDY/3 uses 32-bit fields.
-	size := 4
-	bytesToInt := func(b []byte) int {
-		return int(BytesToUint32(b))
-	}
-
-	// Read in the number of name/value pairs.
-	pairs, err := ReadExactly(reader, size)
-	if err != nil {
-		return nil, err
-	}
-	numNameValuePairs := bytesToInt(pairs)
-
-	header := make(http.Header)
-	bounds := MAX_FRAME_SIZE - 12 // Maximum frame size minus maximum non-header data (SYN_STREAM)
-	for i := 0; i < numNameValuePairs; i++ {
-		var nameLength, valueLength int
-
-		// Get the name's length.
-		length, err := ReadExactly(reader, size)
-		if err != nil {
-			return nil, err
-		}
-		nameLength = bytesToInt(length)
-		bounds -= size
-
-		if nameLength > bounds {
-			fmt.Printf("Error: Maximum header length is %d. Received name length %d.\n", bounds, nameLength)
-			return nil, errors.New("Error: Incorrect header name length.")
-		}
-		bounds -= nameLength
-
-		// Get the name.
-		name, err := ReadExactly(reader, nameLength)
-		if err != nil {
-			return nil, err
-		}
-
-		// Get the value's length.
-		length, err = ReadExactly(reader, size)
-		if err != nil {
-			return nil, err
-		}
-		valueLength = bytesToInt(length)
-		bounds -= size
-
-		if valueLength > bounds {
-			fmt.Printf("Error: Maximum header length is %d. Received values length %d.\n", bounds, valueLength)
-			return nil, errors.New("Error: Incorrect header values length.")
-		}
-		bounds -= valueLength
-
-		// Get the values.
-		values, err := ReadExactly(reader, valueLength)
-		if err != nil {
-			return nil, err
-		}
-
-		// Split the value on null boundaries.
-		for _, value := range bytes.Split(values, []byte{'\x00'}) {
-			header.Add(string(name), string(value))
-		}
-	}
-
-	return header, nil
-}
-
-/* ----------- End SPDY Parsing (from SlyMarbo/spdy ) --------- */
 
 // USERSPACE -----------------------------------------------------------------
 
@@ -168,7 +67,7 @@ func (stream *SpdyStream) ProcessData(serverStream *goquic.QuicSpdyServerStream,
 	if !stream.header_parsed {
 		// We don't want to consume the buffer *yet*, so create a new reader
 		reader := bytes.NewReader(stream.buffer.Bytes())
-		header, err := ParseHeaders(reader)
+		header, err := spdy.ParseHeaders(reader)
 		if err != nil {
 			// Header parsing unsuccessful, maybe header is not yet completely received
 			// Append it to the buffer for parsing later
@@ -249,14 +148,9 @@ type QuicSpdyServer struct {
 	ReadTimeout    time.Duration
 	WriteTimeout   time.Duration
 	MaxHeaderBytes int
+	numOfServers   int
 	//TLSConfig *tls.Config
 }
-
-var numOfServers int
-var port int
-var serveRoot string
-var logLevel int
-var proxyUrl string
 
 // TODO(hodduc) ListenAndServe() and Serve() should be moved to goquic side
 func (srv *QuicSpdyServer) ListenAndServe() error {
@@ -264,9 +158,6 @@ func (srv *QuicSpdyServer) ListenAndServe() error {
 	if addr == "" {
 		addr = ":http"
 	}
-
-	goquic.Initialize()
-	goquic.SetLogLevel(logLevel)
 
 	conn, err := net.ListenPacket("udp", addr)
 	if err != nil {
@@ -277,9 +168,9 @@ func (srv *QuicSpdyServer) ListenAndServe() error {
 		return errors.New("ListenPacket did not return net.UDPConn")
 	}
 
-	chanArray := make([](chan udpData), numOfServers)
+	chanArray := make([](chan udpData), srv.numOfServers)
 
-	for i := 0; i < numOfServers; i++ {
+	for i := 0; i < srv.numOfServers; i++ {
 		channel := make(chan udpData)
 		go srv.Serve(udp_conn, channel)
 		chanArray[i] = channel
@@ -312,7 +203,7 @@ func (srv *QuicSpdyServer) ListenAndServe() error {
 		buf_new := make([]byte, len(buf))
 		copy(buf_new, buf)
 
-		chanArray[connId%uint64(numOfServers)] <- udpData{n: n, addr: peer_addr, buf: buf_new}
+		chanArray[connId%uint64(srv.numOfServers)] <- udpData{n: n, addr: peer_addr, buf: buf_new}
 		// TODO(hodduc): Minimize heap uses of buf
 		// TODO(hodduc): Smart Load Balancing
 	}
@@ -356,45 +247,7 @@ func (srv *QuicSpdyServer) Serve(conn *net.UDPConn, readChan chan udpData) error
 	}
 }
 
-func ListenAndServeQuicSpdyOnly(addr string, certFile string, keyFile string, handler http.Handler) error {
-	server := &QuicSpdyServer{Addr: addr, Handler: handler}
+func ListenAndServeQuicSpdyOnly(addr string, certFile string, keyFile string, numOfServers int, handler http.Handler) error {
+	server := &QuicSpdyServer{Addr: addr, Handler: handler, numOfServers: numOfServers}
 	return server.ListenAndServe()
-}
-
-func httpHandler(w http.ResponseWriter, req *http.Request) {
-	w.Write([]byte("This is an example server.\n"))
-}
-
-func init() {
-	flag.IntVar(&numOfServers, "n", 1, "num of servers")
-	flag.IntVar(&port, "port", 8080, "UDP port number to listen")
-	flag.StringVar(&serveRoot, "root", "/tmp", "Root of path to serve under https://127.0.0.1/files/")
-	flag.IntVar(&logLevel, "loglevel", -1, "Log level")
-	flag.StringVar(&proxyUrl, "proxyurl", "", "Set some url to use as proxy")
-}
-
-func main() {
-	flag.Parse()
-
-	log.Printf("About to listen on %d. Go to https://127.0.0.1:%d/", port, port)
-	portStr := fmt.Sprintf(":%d", port)
-
-	if len(proxyUrl) == 0 {
-		http.HandleFunc("/", httpHandler)
-		http.Handle("/files/", http.StripPrefix("/files/", http.FileServer(http.Dir(serveRoot))))
-		err := ListenAndServeQuicSpdyOnly(portStr, "cert.pem", "key.pem", nil)
-		if err != nil {
-			log.Fatal(err)
-		}
-	} else {
-		parsedUrl, err := url.Parse(proxyUrl)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		err = ListenAndServeQuicSpdyOnly(portStr, "cert.pem", "key.pem", httputil.NewSingleHostReverseProxy(parsedUrl))
-		if err != nil {
-			log.Fatal(err)
-		}
-	}
 }

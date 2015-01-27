@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"goquic"
 	"io"
+	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
@@ -121,7 +122,7 @@ type SpdyStream struct {
 	stream_id     uint32
 	header        http.Header
 	header_parsed bool
-	buffer        bytes.Buffer
+	buffer        *bytes.Buffer
 	server        *QuicSpdyServer
 }
 
@@ -212,6 +213,8 @@ func (stream *SpdyStream) OnFinRead(serverStream *goquic.QuicSpdyServerStream) {
 	url.Scheme = header.Get(":scheme")
 	url.Host = header.Get(":host")
 	req.URL = url
+	// TODO(serialx): To buffered async read
+	req.Body = ioutil.NopCloser(stream.buffer)
 
 	w := &spdyResponseWriter{
 		serverStream: serverStream,
@@ -235,6 +238,7 @@ func (s *SpdySession) CreateIncomingDataStream(stream_id uint32) goquic.DataStre
 		stream_id:     stream_id,
 		header_parsed: false,
 		server:        s.server,
+		buffer:        new(bytes.Buffer),
 	}
 	return stream
 }

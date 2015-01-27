@@ -362,11 +362,7 @@ func ListenAndServeQuicSpdyOnly(addr string, certFile string, keyFile string, ha
 }
 
 func httpHandler(w http.ResponseWriter, req *http.Request) {
-	w.Header().Set("Content-Type", "application/zip")
-	for i := 0; i < 5; i++ {
-		w.Write(make([]byte, 1000000))
-	}
-	//w.Write([]byte("This is an example server.\n"))
+	w.Write([]byte("This is an example server.\n"))
 }
 
 func init() {

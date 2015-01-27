@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"flag"
 	"fmt"
 	"goquic"
 	"io"
@@ -240,7 +241,10 @@ type QuicSpdyServer struct {
 	//TLSConfig *tls.Config
 }
 
-const numOfServers = 7
+var numOfServers int
+var port int
+var serveRoot string
+var logLevel int
 
 // TODO(hodduc) ListenAndServe() and Serve() should be moved to goquic side
 func (srv *QuicSpdyServer) ListenAndServe() error {
@@ -250,7 +254,7 @@ func (srv *QuicSpdyServer) ListenAndServe() error {
 	}
 
 	goquic.Initialize()
-	//goquic.SetLogLevel(-1)
+	goquic.SetLogLevel(logLevel)
 
 	conn, err := net.ListenPacket("udp", addr)
 	if err != nil {
@@ -261,7 +265,7 @@ func (srv *QuicSpdyServer) ListenAndServe() error {
 		return errors.New("ListenPacket did not return net.UDPConn")
 	}
 
-	var chanArray [numOfServers](chan udpData)
+	chanArray := make([](chan udpData), numOfServers)
 
 	for i := 0; i < numOfServers; i++ {
 		channel := make(chan udpData)
@@ -291,9 +295,12 @@ func (srv *QuicSpdyServer) ListenAndServe() error {
 			connId = 0
 		}
 
-		fmt.Println("ConnId", connId, " ---- > ", connId%numOfServers)
+		//		fmt.Println("ConnId", connId, " ---- > ", connId%numOfServers)
 
-		chanArray[connId%numOfServers] <- udpData{n: n, addr: peer_addr, buf: buf[:]}
+		buf_new := make([]byte, len(buf))
+		copy(buf_new, buf)
+
+		chanArray[connId%uint64(numOfServers)] <- udpData{n: n, addr: peer_addr, buf: buf_new}
 		// TODO(hodduc): Minimize heap uses of buf
 		// TODO(hodduc): Smart Load Balancing
 	}
@@ -350,11 +357,22 @@ func httpHandler(w http.ResponseWriter, req *http.Request) {
 	//w.Write([]byte("This is an example server.\n"))
 }
 
+func init() {
+	flag.IntVar(&numOfServers, "n", 1, "num of servers")
+	flag.IntVar(&port, "port", 8080, "UDP port number to listen")
+	flag.StringVar(&serveRoot, "root", "/tmp", "Root of path to serve under https://127.0.0.1/files/")
+	flag.IntVar(&logLevel, "loglevel", -1, "Log level")
+}
+
 func main() {
+	flag.Parse()
+
 	http.HandleFunc("/", httpHandler)
-	http.Handle("/files/", http.StripPrefix("/files/", http.FileServer(http.Dir("/home/serialx/"))))
-	log.Printf("About to listen on 10443. Go to https://127.0.0.1:10443/")
-	err := ListenAndServeQuicSpdyOnly(":8080", "cert.pem", "key.pem", nil)
+	http.Handle("/files/", http.StripPrefix("/files/", http.FileServer(http.Dir(serveRoot))))
+	log.Printf("About to listen on %d. Go to https://127.0.0.1:%d/", port, port)
+
+	portStr := fmt.Sprintf(":%d", port)
+	err := ListenAndServeQuicSpdyOnly(portStr, "cert.pem", "key.pem", nil)
 	if err != nil {
 		log.Fatal(err)
 	}

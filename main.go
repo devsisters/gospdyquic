@@ -11,6 +11,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"time"
 )
@@ -245,6 +246,7 @@ var numOfServers int
 var port int
 var serveRoot string
 var logLevel int
+var proxyUrl string
 
 // TODO(hodduc) ListenAndServe() and Serve() should be moved to goquic side
 func (srv *QuicSpdyServer) ListenAndServe() error {
@@ -362,18 +364,31 @@ func init() {
 	flag.IntVar(&port, "port", 8080, "UDP port number to listen")
 	flag.StringVar(&serveRoot, "root", "/tmp", "Root of path to serve under https://127.0.0.1/files/")
 	flag.IntVar(&logLevel, "loglevel", -1, "Log level")
+	flag.StringVar(&proxyUrl, "proxyurl", "", "Set some url to use as proxy")
 }
 
 func main() {
 	flag.Parse()
 
-	http.HandleFunc("/", httpHandler)
-	http.Handle("/files/", http.StripPrefix("/files/", http.FileServer(http.Dir(serveRoot))))
 	log.Printf("About to listen on %d. Go to https://127.0.0.1:%d/", port, port)
-
 	portStr := fmt.Sprintf(":%d", port)
-	err := ListenAndServeQuicSpdyOnly(portStr, "cert.pem", "key.pem", nil)
-	if err != nil {
-		log.Fatal(err)
+
+	if len(proxyUrl) == 0 {
+		http.HandleFunc("/", httpHandler)
+		http.Handle("/files/", http.StripPrefix("/files/", http.FileServer(http.Dir(serveRoot))))
+		err := ListenAndServeQuicSpdyOnly(portStr, "cert.pem", "key.pem", nil)
+		if err != nil {
+			log.Fatal(err)
+		}
+	} else {
+		parsedUrl, err := url.Parse(proxyUrl)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		err = ListenAndServeQuicSpdyOnly(portStr, "cert.pem", "key.pem", httputil.NewSingleHostReverseProxy(parsedUrl))
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 }

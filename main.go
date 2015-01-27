@@ -201,11 +201,17 @@ func (stream *SpdyStream) OnFinRead(serverStream *goquic.QuicSpdyServerStream) {
 	req.Header = header
 	req.Host = header.Get(":host")
 	// req.RemoteAddr = serverStream. TODO(serialx): Add remote addr
-	req.URL = &url.URL{
-		Scheme: header.Get(":scheme"),
-		Host:   header.Get(":host"),
-		Path:   header.Get(":path"),
+	rawPath := header.Get(":path")
+
+	url, err := url.ParseRequestURI(rawPath)
+	if err != nil {
+		return
+		// TODO(serialx): Send error message
 	}
+
+	url.Scheme = header.Get(":scheme")
+	url.Host = header.Get(":host")
+	req.URL = url
 
 	w := &spdyResponseWriter{
 		serverStream: serverStream,

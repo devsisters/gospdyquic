@@ -15,8 +15,6 @@ import (
 	"github.com/devsisters/gospdyquic/spdy"
 )
 
-// USERSPACE -----------------------------------------------------------------
-
 type SpdyStream struct {
 	stream_id     uint32
 	header        http.Header
@@ -152,7 +150,6 @@ type QuicSpdyServer struct {
 	//TLSConfig *tls.Config
 }
 
-// TODO(hodduc) ListenAndServe() and Serve() should be moved to goquic side
 func (srv *QuicSpdyServer) ListenAndServe() error {
 	addr := srv.Addr
 	if addr == "" {

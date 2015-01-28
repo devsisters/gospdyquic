@@ -244,6 +244,25 @@ func (srv *QuicSpdyServer) Serve(conn *net.UDPConn, readChan chan udpData) error
 	}
 }
 
+func ListenAndServe(addr string, certFile string, keyFile string, numOfServers int, handler http.Handler) error {
+	port := addr[1:]
+
+	if handler == nil {
+		handler = http.DefaultServeMux
+	}
+
+	altProtoMiddleware := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Add("Alternate-Protocol", port+":quic")
+			next.ServeHTTP(w, r)
+		})
+	}
+
+	go http.ListenAndServe(addr, altProtoMiddleware(handler))
+	server := &QuicSpdyServer{Addr: addr, Handler: handler, numOfServers: numOfServers}
+	return server.ListenAndServe()
+}
+
 func ListenAndServeQuicSpdyOnly(addr string, certFile string, keyFile string, numOfServers int, handler http.Handler) error {
 	server := &QuicSpdyServer{Addr: addr, Handler: handler, numOfServers: numOfServers}
 	return server.ListenAndServe()

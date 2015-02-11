@@ -59,7 +59,7 @@ func (w *spdyResponseWriter) WriteHeader(statusCode int) {
 	w.wroteHeader = true
 }
 
-func (stream *SpdyStream) ProcessData(serverStream *goquic.QuicSpdyServerStream, newBytes []byte) int {
+func (stream *SpdyStream) ProcessData(serverStream goquic.QuicStream, newBytes []byte) int {
 	stream.buffer.Write(newBytes)
 
 	if !stream.header_parsed {
@@ -86,7 +86,9 @@ func (stream *SpdyStream) ProcessData(serverStream *goquic.QuicSpdyServerStream,
 	return len(newBytes)
 }
 
-func (stream *SpdyStream) OnFinRead(serverStream *goquic.QuicSpdyServerStream) {
+func (stream *SpdyStream) OnFinRead(quicStream goquic.QuicStream) {
+	serverStream := quicStream.(*goquic.QuicSpdyServerStream)
+
 	if !stream.header_parsed {
 		// TODO(serialx): Send error message
 	}
@@ -138,6 +140,11 @@ func (s *SpdySession) CreateIncomingDataStream(stream_id uint32) goquic.DataStre
 		buffer:        new(bytes.Buffer),
 	}
 	return stream
+}
+
+func (s *SpdySession) CreateOutgoingDataStream() goquic.DataStreamProcessor {
+	// NOT SUPPORTED
+	return nil
 }
 
 type QuicSpdyServer struct {

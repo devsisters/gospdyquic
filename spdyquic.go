@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/bradfitz/http2"
 	"github.com/devsisters/goquic"
 	"github.com/devsisters/gospdyquic/spdy"
 )
@@ -343,7 +344,9 @@ func ListenAndServe(addr string, numOfServers int, handler http.Handler) error {
 		handler = http.DefaultServeMux
 	}
 
-	go http.ListenAndServe(addr, altProtoMiddleware(handler, port))
+	httpServer := &http.Server{Addr: addr, Handler: altProtoMiddleware(handler, port)}
+	http2.ConfigureServer(httpServer, nil)
+	go httpServer.ListenAndServe()
 	server := &QuicSpdyServer{Addr: addr, Handler: handler, numOfServers: numOfServers}
 	return server.ListenAndServe()
 }
@@ -359,7 +362,9 @@ func ListenAndServeSecure(addr string, certFile string, keyFile string, numOfSer
 	}
 
 	go func() {
-		err := http.ListenAndServeTLS(addr, certFile, keyFile, altProtoMiddleware(handler, port))
+		httpServer := &http.Server{Addr: addr, Handler: altProtoMiddleware(handler, port)}
+		http2.ConfigureServer(httpServer, nil)
+		err := httpServer.ListenAndServeTLS(certFile, keyFile)
 		if err != nil {
 			panic(err)
 		}

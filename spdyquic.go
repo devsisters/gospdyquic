@@ -24,7 +24,7 @@ type SpdyStream struct {
 }
 
 type spdyResponseWriter struct {
-	serverStream *goquic.QuicSpdyServerStream
+	serverStream goquic.QuicStream
 	header       http.Header
 	wroteHeader  bool
 }
@@ -87,8 +87,6 @@ func (stream *SpdyStream) ProcessData(serverStream goquic.QuicStream, newBytes [
 }
 
 func (stream *SpdyStream) OnFinRead(quicStream goquic.QuicStream) {
-	serverStream := quicStream.(*goquic.QuicSpdyServerStream)
-
 	if !stream.header_parsed {
 		// TODO(serialx): Send error message
 	}
@@ -116,7 +114,7 @@ func (stream *SpdyStream) OnFinRead(quicStream goquic.QuicStream) {
 	req.Body = ioutil.NopCloser(stream.buffer)
 
 	w := &spdyResponseWriter{
-		serverStream: serverStream,
+		serverStream: quicStream,
 		header:       make(http.Header),
 	}
 	if stream.server.Handler != nil {
@@ -125,7 +123,7 @@ func (stream *SpdyStream) OnFinRead(quicStream goquic.QuicStream) {
 		http.DefaultServeMux.ServeHTTP(w, req)
 	}
 
-	serverStream.WriteOrBufferData(make([]byte, 0), true)
+	quicStream.WriteOrBufferData(make([]byte, 0), true)
 }
 
 type SpdySession struct {

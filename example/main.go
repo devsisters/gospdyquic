@@ -42,7 +42,7 @@ func main() {
 	if len(proxyUrl) == 0 {
 		http.HandleFunc("/", httpHandler)
 		http.Handle("/files/", http.StripPrefix("/files/", http.FileServer(http.Dir(serveRoot))))
-		err := gospdyquic.ListenAndServe(portStr, "cert.pem", "key.pem", numOfServers, nil)
+		err := gospdyquic.ListenAndServeSecure(portStr, "cert.pem", "key.pem", numOfServers, nil)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -52,7 +52,7 @@ func main() {
 			log.Fatal(err)
 		}
 
-		err = gospdyquic.ListenAndServe(portStr, "cert.pem", "key.pem", numOfServers, httputil.NewSingleHostReverseProxy(parsedUrl))
+		err = gospdyquic.ListenAndServeSecure(portStr, "cert.pem", "key.pem", numOfServers, httputil.NewSingleHostReverseProxy(parsedUrl))
 		if err != nil {
 			log.Fatal(err)
 		}

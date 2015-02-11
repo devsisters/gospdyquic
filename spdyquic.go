@@ -2,6 +2,12 @@ package gospdyquic
 
 import (
 	"bytes"
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -152,7 +158,7 @@ type QuicSpdyServer struct {
 	WriteTimeout   time.Duration
 	MaxHeaderBytes int
 	numOfServers   int
-	//TLSConfig *tls.Config
+	Certificate    tls.Certificate
 }
 
 func (srv *QuicSpdyServer) ListenAndServe() error {
@@ -211,6 +217,62 @@ func (srv *QuicSpdyServer) ListenAndServe() error {
 	}
 }
 
+type ProofSource struct {
+	server *QuicSpdyServer
+}
+
+func (ps *ProofSource) GetProof(addr *net.UDPAddr, hostname []byte, serverConfig []byte, ecdsaOk bool) (outCerts [][]byte, outSignature []byte) {
+	outCerts = make([][]byte, 0, 10)
+	for _, cert := range ps.server.Certificate.Certificate {
+		x509cert, err := x509.ParseCertificate(cert)
+		if err != nil {
+			panic(err)
+		}
+		outCerts = append(outCerts, x509cert.Raw)
+	}
+	var err error = nil
+
+	// Generate "proof of authenticity" (See "Quic Crypto" docs for details)
+	// Length of the prefix used to calculate the signature: length of label + 0x00 byte
+	const kPrefixStr = "QUIC server config signature"
+	const kPrefixLen = len(kPrefixStr) + 1
+	//bufferToSign := make([]byte, 0, len(serverConfig)+kPrefixLen)
+	bufferToSign := bytes.NewBuffer(make([]byte, 0, len(serverConfig)+kPrefixLen))
+	bufferToSign.Write([]byte(kPrefixStr))
+	bufferToSign.Write([]byte("\x00"))
+	bufferToSign.Write(serverConfig)
+
+	hasher := crypto.SHA256.New()
+	_, err = hasher.Write(bufferToSign.Bytes())
+	if err != nil {
+		panic("Error while hashing")
+	}
+	hashSum := hasher.Sum(nil)
+
+	switch priv := ps.server.Certificate.PrivateKey.(type) {
+	case *rsa.PrivateKey:
+		outSignature, err = priv.Sign(rand.Reader, hashSum, &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash, Hash: crypto.SHA256})
+		if err != nil {
+			panic(err)
+		}
+	case *ecdsa.PrivateKey:
+		// XXX(serialx): Not tested. Should input be a hashSum or the original message?
+		//               Since there is no secure QUIC server reference implementation,
+		//               only a real test with the Chrome browser would verify the code.
+		//               Since I don't currently have a ECDSA certificate, no testing is done.
+		outSignature, err = priv.Sign(rand.Reader, hashSum, nil)
+		if err != nil {
+			panic(err)
+		}
+	default:
+		panic("Unknown form of private key")
+	}
+	if err != nil {
+		panic(err)
+	}
+	return outCerts, outSignature
+}
+
 func (srv *QuicSpdyServer) Serve(conn *net.UDPConn, readChan chan udpData) error {
 	defer conn.Close()
 
@@ -225,8 +287,9 @@ func (srv *QuicSpdyServer) Serve(conn *net.UDPConn, readChan chan udpData) error
 
 	alarmChan := make(chan *goquic.GoQuicAlarm)
 	writeChan := make(chan *goquic.WriteCallback)
+	proofSource := &ProofSource{server: srv}
 
-	dispatcher := goquic.CreateQuicDispatcher(conn, createSpdySession, &goquic.TaskRunner{AlarmChan: alarmChan, WriteChan: writeChan})
+	dispatcher := goquic.CreateQuicDispatcher(conn, createSpdySession, &goquic.TaskRunner{AlarmChan: alarmChan, WriteChan: writeChan}, proofSource)
 
 	for {
 		select {
@@ -249,22 +312,64 @@ func (srv *QuicSpdyServer) Serve(conn *net.UDPConn, readChan chan udpData) error
 	}
 }
 
-func ListenAndServe(addr string, certFile string, keyFile string, numOfServers int, handler http.Handler) error {
-	port := addr[1:]
+// Provide "Alternate-Protocol" header for QUIC
+func altProtoMiddleware(next http.Handler, port int) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Add("Alternate-Protocol", fmt.Sprintf("%d:quic", port))
+		next.ServeHTTP(w, r)
+	})
+}
+
+func parsePort(addr string) (port int, err error) {
+	_, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return 0, err
+	}
+	port, err = net.LookupPort("udp", portStr)
+	if err != nil {
+		return 0, err
+	}
+
+	return port, nil
+}
+
+func ListenAndServe(addr string, numOfServers int, handler http.Handler) error {
+	port, err := parsePort(addr)
+	if err != nil {
+		return err
+	}
 
 	if handler == nil {
 		handler = http.DefaultServeMux
 	}
 
-	altProtoMiddleware := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Add("Alternate-Protocol", port+":quic")
-			next.ServeHTTP(w, r)
-		})
+	go http.ListenAndServe(addr, altProtoMiddleware(handler, port))
+	server := &QuicSpdyServer{Addr: addr, Handler: handler, numOfServers: numOfServers}
+	return server.ListenAndServe()
+}
+
+func ListenAndServeSecure(addr string, certFile string, keyFile string, numOfServers int, handler http.Handler) error {
+	port, err := parsePort(addr)
+	if err != nil {
+		return err
 	}
 
-	go http.ListenAndServe(addr, altProtoMiddleware(handler))
-	server := &QuicSpdyServer{Addr: addr, Handler: handler, numOfServers: numOfServers}
+	if handler == nil {
+		handler = http.DefaultServeMux
+	}
+
+	go func() {
+		err := http.ListenAndServeTLS(addr, certFile, keyFile, altProtoMiddleware(handler, port))
+		if err != nil {
+			panic(err)
+		}
+	}()
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return err
+	}
+
+	server := &QuicSpdyServer{Addr: addr, Handler: handler, numOfServers: numOfServers, Certificate: cert}
 	return server.ListenAndServe()
 }
 

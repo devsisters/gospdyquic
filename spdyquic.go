@@ -133,6 +133,9 @@ func (stream *SpdyStream) OnFinRead(quicStream goquic.QuicStream) {
 	quicStream.WriteOrBufferData(make([]byte, 0), true)
 }
 
+func (stream *SpdyStream) OnClose(quicStream goquic.QuicStream) {
+}
+
 type SpdySession struct {
 	server *QuicSpdyServer
 }

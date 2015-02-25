@@ -12,13 +12,18 @@ import (
 )
 
 type QuicRoundTripper struct {
-	//	conn *goquic.Conn
-	// TODO(hodduc): cache(keepalive?) conns
+	conns map[string]*goquic.Conn
 }
 
 type badStringError struct {
 	what string
 	str  string
+}
+
+func NewRoundTripper() *QuicRoundTripper {
+	return &QuicRoundTripper{
+		conns: make(map[string]*goquic.Conn),
+	}
 }
 
 func (e *badStringError) Error() string { return fmt.Sprintf("%s %q", e.what, e.str) }
@@ -31,10 +36,17 @@ func (q *QuicRoundTripper) RoundTrip(request *http.Request) (*http.Response, err
 		// TODO(hodduc): POST / HEAD / PUT support
 	}
 
-	conn, err := goquic.Dial("udp4", request.Host)
-	if err != nil {
-		panic(err)
+	conn, exists := q.conns[request.Host]
+	if !exists {
+		conn_new, err := goquic.Dial("udp4", request.Host)
+		if err != nil {
+			panic(err)
+		}
+
+		q.conns[request.Host] = conn_new
+		conn = conn_new
 	}
+
 	st := conn.CreateStream()
 
 	header := make(http.Header)
@@ -43,7 +55,6 @@ func (q *QuicRoundTripper) RoundTrip(request *http.Request) (*http.Response, err
 			header.Add(k, vv)
 		}
 	}
-	fmt.Println("HOST: ", request.Host)
 	header.Set(":host", request.Host)
 	header.Set(":version", request.Proto)
 	header.Set(":method", request.Method)

@@ -40,7 +40,7 @@ func (q *QuicRoundTripper) RoundTrip(request *http.Request) (*http.Response, err
 	if !exists {
 		conn_new, err := goquic.Dial("udp4", request.Host)
 		if err != nil {
-			panic(err)
+			return nil, err
 		}
 
 		q.conns[request.Host] = conn_new

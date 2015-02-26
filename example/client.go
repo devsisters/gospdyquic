@@ -27,7 +27,7 @@ func main() {
 	flag.Parse()
 
 	client := &http.Client{
-		Transport: gospdyquic.NewRoundTripper(),
+		Transport: gospdyquic.NewRoundTripper(false),
 	}
 
 	resp, err := client.Get(url)

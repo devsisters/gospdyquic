@@ -1,6 +1,7 @@
 package gospdyquic
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -12,7 +13,8 @@ import (
 )
 
 type QuicRoundTripper struct {
-	conns map[string]*goquic.Conn
+	conns          map[string]*goquic.Conn
+	keepConnection bool
 }
 
 type badStringError struct {
@@ -20,9 +22,10 @@ type badStringError struct {
 	str  string
 }
 
-func NewRoundTripper() *QuicRoundTripper {
+func NewRoundTripper(keepConnection bool) *QuicRoundTripper {
 	return &QuicRoundTripper{
-		conns: make(map[string]*goquic.Conn),
+		conns:          make(map[string]*goquic.Conn),
+		keepConnection: keepConnection,
 	}
 }
 
@@ -36,8 +39,11 @@ func (q *QuicRoundTripper) RoundTrip(request *http.Request) (*http.Response, err
 		// TODO(hodduc): POST / HEAD / PUT support
 	}
 
-	conn, exists := q.conns[request.Host]
-	if !exists {
+	var conn *goquic.Conn
+	var exists bool
+
+	conn, exists = q.conns[request.Host]
+	if !q.keepConnection || !exists {
 		conn_new, err := goquic.Dial("udp4", request.Host)
 		if err != nil {
 			return nil, err
@@ -46,7 +52,6 @@ func (q *QuicRoundTripper) RoundTrip(request *http.Request) (*http.Response, err
 		q.conns[request.Host] = conn_new
 		conn = conn_new
 	}
-
 	st := conn.CreateStream()
 
 	header := make(http.Header)
@@ -94,7 +99,20 @@ func (q *QuicRoundTripper) RoundTrip(request *http.Request) (*http.Response, err
 		resp.ContentLength = -1
 	}
 	resp.Request = request
-	resp.Body = ioutil.NopCloser(st)
+
+	if q.keepConnection {
+		resp.Body = ioutil.NopCloser(st)
+	} else {
+		// XXX(hodduc): "conn" should be closed after the user reads all response body, so
+		// it's hard to determine when to close "conn". So we read all response body prematurely.
+		// If response is very big, this could be problematic. (Consider using runtime.finalizer())
+		body, err := ioutil.ReadAll(st)
+		if err != nil {
+			return nil, err
+		}
+		resp.Body = ioutil.NopCloser(bytes.NewBuffer(body))
+		conn.Close()
+	}
 
 	return resp, nil
 }

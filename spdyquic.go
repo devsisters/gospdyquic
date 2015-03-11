@@ -293,7 +293,7 @@ func (srv *QuicSpdyServer) Serve(conn *net.UDPConn, readChan chan udpData) error
 	writeChan := make(chan *goquic.WriteCallback)
 	proofSource := &ProofSource{server: srv}
 
-	dispatcher := goquic.CreateQuicDispatcher(conn, createSpdySession, &goquic.TaskRunner{AlarmChan: alarmChan, WriteChan: writeChan}, proofSource)
+	dispatcher := goquic.CreateQuicDispatcher(conn, createSpdySession, goquic.CreateTaskRunner(alarmChan, writeChan), proofSource)
 
 	for {
 		select {

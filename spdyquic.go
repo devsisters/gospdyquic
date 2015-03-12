@@ -163,6 +163,7 @@ type QuicSpdyServer struct {
 	MaxHeaderBytes int
 	numOfServers   int
 	Certificate    tls.Certificate
+	isSecure       bool
 }
 
 func (srv *QuicSpdyServer) ListenAndServe() error {
@@ -294,7 +295,7 @@ func (srv *QuicSpdyServer) Serve(conn *net.UDPConn, readChan chan udpData) error
 	writeChan := make(chan *goquic.WriteCallback)
 	proofSource := &ProofSource{server: srv}
 
-	dispatcher := goquic.CreateQuicDispatcher(conn, createSpdySession, goquic.CreateTaskRunner(alarmChan, writeChan), proofSource)
+	dispatcher := goquic.CreateQuicDispatcher(conn, createSpdySession, goquic.CreateTaskRunner(alarmChan, writeChan), proofSource, srv.isSecure)
 
 	for {
 		select {
@@ -351,7 +352,7 @@ func ListenAndServe(addr string, numOfServers int, handler http.Handler) error {
 	httpServer := &http.Server{Addr: addr, Handler: altProtoMiddleware(handler, port)}
 	http2.ConfigureServer(httpServer, nil)
 	go httpServer.ListenAndServe()
-	server := &QuicSpdyServer{Addr: addr, Handler: handler, numOfServers: numOfServers}
+	server := &QuicSpdyServer{Addr: addr, Handler: handler, numOfServers: numOfServers, isSecure: false}
 	return server.ListenAndServe()
 }
 
@@ -378,7 +379,7 @@ func ListenAndServeSecure(addr string, certFile string, keyFile string, numOfSer
 		return err
 	}
 
-	server := &QuicSpdyServer{Addr: addr, Handler: handler, numOfServers: numOfServers, Certificate: cert}
+	server := &QuicSpdyServer{Addr: addr, Handler: handler, numOfServers: numOfServers, Certificate: cert, isSecure: true}
 	return server.ListenAndServe()
 }
 

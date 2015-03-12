@@ -4,7 +4,9 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net/http"
+	"net/http/httputil"
+	"net/url"
+	"os"
 
 	"github.com/devsisters/goquic"
 	"github.com/devsisters/gospdyquic"
@@ -12,18 +14,18 @@ import (
 
 var numOfServers int
 var port int
-var serveRoot string
 var logLevel int
-
-func httpHandler(w http.ResponseWriter, req *http.Request) {
-	w.Write([]byte("This is an example server.\n"))
-}
 
 func init() {
 	flag.IntVar(&numOfServers, "n", 1, "Number of concurrent quic dispatchers")
 	flag.IntVar(&port, "port", 8080, "TCP/UDP port number to listen")
-	flag.StringVar(&serveRoot, "root", "/tmp", "Root of path to serve under https://127.0.0.1/files/")
 	flag.IntVar(&logLevel, "loglevel", -1, "Log level")
+
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s backend_url\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Options:\n")
+		flag.PrintDefaults()
+	}
 }
 
 func main() {
@@ -31,13 +33,23 @@ func main() {
 	goquic.SetLogLevel(logLevel)
 
 	flag.Parse()
+	if flag.NArg() != 1 {
+		flag.Usage()
+		return
+	}
+	proxyUrl := flag.Arg(0)
 
 	log.Printf("About to listen on %d. Go to https://127.0.0.1:%d/", port, port)
 	portStr := fmt.Sprintf(":%d", port)
 
-	http.HandleFunc("/", httpHandler)
-	http.Handle("/files/", http.StripPrefix("/files/", http.FileServer(http.Dir(serveRoot))))
-	err := gospdyquic.ListenAndServeSecure(portStr, "cert.pem", "key.pem", numOfServers, nil)
+	parsedUrl, err := url.Parse(proxyUrl)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	log.Printf("Starting reverse proxy for backend URL: %v", parsedUrl)
+
+	err = gospdyquic.ListenAndServeSecure(portStr, "cert.pem", "key.pem", numOfServers, httputil.NewSingleHostReverseProxy(parsedUrl))
 	if err != nil {
 		log.Fatal(err)
 	}

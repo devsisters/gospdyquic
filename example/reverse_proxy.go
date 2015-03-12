@@ -15,11 +15,15 @@ import (
 var numOfServers int
 var port int
 var logLevel int
+var cert string
+var key string
 
 func init() {
 	flag.IntVar(&numOfServers, "n", 1, "Number of concurrent quic dispatchers")
 	flag.IntVar(&port, "port", 8080, "TCP/UDP port number to listen")
 	flag.IntVar(&logLevel, "loglevel", -1, "Log level")
+	flag.StringVar(&cert, "cert", "", "Certificate file (PEM), will use encrypted QUIC and SSL when provided")
+	flag.StringVar(&key, "key", "", "Private key file (PEM), will use encrypted QUIC and SSL when provided")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s backend_url\n", os.Args[0])
@@ -37,9 +41,18 @@ func main() {
 		flag.Usage()
 		return
 	}
+
+	useEncryption := false
+	if len(cert) > 0 && len(key) > 0 {
+		useEncryption = true
+	}
 	proxyUrl := flag.Arg(0)
 
-	log.Printf("About to listen on %d. Go to https://127.0.0.1:%d/", port, port)
+	scheme := "http"
+	if useEncryption {
+		scheme = "https"
+	}
+	log.Printf("About to listen on %d. Go to %s://127.0.0.1:%d/", port, scheme, port)
 	portStr := fmt.Sprintf(":%d", port)
 
 	parsedUrl, err := url.Parse(proxyUrl)
@@ -49,7 +62,11 @@ func main() {
 
 	log.Printf("Starting reverse proxy for backend URL: %v", parsedUrl)
 
-	err = gospdyquic.ListenAndServeSecure(portStr, "cert.pem", "key.pem", numOfServers, httputil.NewSingleHostReverseProxy(parsedUrl))
+	if useEncryption {
+		err = gospdyquic.ListenAndServeSecure(portStr, cert, key, numOfServers, httputil.NewSingleHostReverseProxy(parsedUrl))
+	} else {
+		err = gospdyquic.ListenAndServe(portStr, numOfServers, httputil.NewSingleHostReverseProxy(parsedUrl))
+	}
 	if err != nil {
 		log.Fatal(err)
 	}

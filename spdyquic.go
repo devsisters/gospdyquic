@@ -184,7 +184,8 @@ func (srv *QuicSpdyServer) ListenAndServe() error {
 	chanArray := make([](chan udpData), srv.numOfServers)
 
 	for i := 0; i < srv.numOfServers; i++ {
-		channel := make(chan udpData)
+		// TODO(hodduc): This may cause blocking. Should implement intermiediate queue that buffers all inputs to avoid blocking on producer side.
+		channel := make(chan udpData, 100)
 		go srv.Serve(udp_conn, channel)
 		chanArray[i] = channel
 	}
@@ -217,7 +218,7 @@ func (srv *QuicSpdyServer) ListenAndServe() error {
 		copy(buf_new, buf)
 
 		chanArray[connId%uint64(srv.numOfServers)] <- udpData{n: n, addr: peer_addr, buf: buf_new}
-		// TODO(hodduc): Minimize heap uses of buf
+		// TODO(hodduc): Minimize heap uses of buf. Consider using sync.Pool standard library to implement buffer pool.
 		// TODO(hodduc): Smart Load Balancing
 	}
 }

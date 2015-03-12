@@ -37,7 +37,6 @@ type spdyResponseWriter struct {
 }
 
 type udpData struct {
-	n    int
 	addr *net.UDPAddr
 	buf  []byte
 }
@@ -214,10 +213,10 @@ func (srv *QuicSpdyServer) ListenAndServe() error {
 
 		//		fmt.Println("ConnId", connId, " ---- > ", connId%numOfServers)
 
-		buf_new := make([]byte, len(buf))
-		copy(buf_new, buf)
+		buf_new := make([]byte, n)
+		copy(buf_new, buf[:n])
 
-		chanArray[connId%uint64(srv.numOfServers)] <- udpData{n: n, addr: peer_addr, buf: buf_new}
+		chanArray[connId%uint64(srv.numOfServers)] <- udpData{addr: peer_addr, buf: buf_new}
 		// TODO(hodduc): Minimize heap uses of buf. Consider using sync.Pool standard library to implement buffer pool.
 		// TODO(hodduc): Smart Load Balancing
 	}
@@ -303,7 +302,7 @@ func (srv *QuicSpdyServer) Serve(conn *net.UDPConn, readChan chan udpData) error
 			if !ok {
 				break
 			}
-			dispatcher.ProcessPacket(listen_addr, result.addr, result.buf[:result.n])
+			dispatcher.ProcessPacket(listen_addr, result.addr, result.buf)
 		case alarm, ok := <-alarmChan:
 			if !ok {
 				break

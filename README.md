@@ -19,6 +19,14 @@ Key features of QUIC over existing TCP+TLS+SPDY include
   * Forward error correction
   * Connection migration
 
+## Project Status
+
+*This library is highly experimental.* Although `libquic` sources are from
+Chromium (which are tested), the Go bindings are still highly pre-alpha state.
+
+See [goquic](https://github.com/devsisters/goquic) for more details about
+current project status.
+
 
 Getting Started
 ===============

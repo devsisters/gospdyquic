@@ -66,6 +66,12 @@ For example, building gospdyquic example server in Mac:
 CGO_LDFLAGS="-L$GOPATH/src/github.com/devsisters/goquic/lib/darwin_amd64" go build $GOPATH/github.com/devsisters/gospdyquic/example/server.go
 ```
 
+In Linux:
+
+```bash
+CGO_LDFLAGS="-L$GOPATH/src/github.com/devsisters/goquic/lib/linux_amd64" go build $GOPATH/github.com/devsisters/gospdyquic/example/server.go
+```
+
 ## How to use server
 
 When running a HTTP server, do:

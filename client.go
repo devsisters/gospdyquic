@@ -31,8 +31,6 @@ func NewRoundTripper(keepConnection bool) *QuicRoundTripper {
 
 func (e *badStringError) Error() string { return fmt.Sprintf("%s %q", e.what, e.str) }
 
-// XXX: goquic.Initialize() should be called by user first.
-
 func (q *QuicRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
 	if request.Method != "GET" {
 		return nil, errors.New("non-GET request is not supported yet. Sorry.")

@@ -33,7 +33,6 @@ func init() {
 }
 
 func main() {
-	goquic.Initialize()
 	goquic.SetLogLevel(logLevel)
 
 	flag.Parse()

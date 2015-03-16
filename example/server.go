@@ -31,9 +31,8 @@ func init() {
 }
 
 func main() {
-	goquic.SetLogLevel(logLevel)
-
 	flag.Parse()
+	goquic.SetLogLevel(logLevel)
 
 	useEncryption := false
 	if len(cert) > 0 && len(key) > 0 {

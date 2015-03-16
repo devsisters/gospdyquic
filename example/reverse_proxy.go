@@ -33,9 +33,9 @@ func init() {
 }
 
 func main() {
+	flag.Parse()
 	goquic.SetLogLevel(logLevel)
 
-	flag.Parse()
 	if flag.NArg() != 1 {
 		flag.Usage()
 		return

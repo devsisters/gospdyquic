@@ -19,9 +19,8 @@ func init() {
 }
 
 func main() {
-	goquic.SetLogLevel(logLevel)
-
 	flag.Parse()
+	goquic.SetLogLevel(logLevel)
 
 	client := &http.Client{
 		Transport: gospdyquic.NewRoundTripper(false),

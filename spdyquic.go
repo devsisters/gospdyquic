@@ -227,7 +227,7 @@ type ProofSource struct {
 	server *QuicSpdyServer
 }
 
-func (ps *ProofSource) GetProof(addr *net.UDPAddr, hostname []byte, serverConfig []byte, ecdsaOk bool) (outCerts [][]byte, outSignature []byte) {
+func (ps *ProofSource) GetProof(addr net.IP, hostname []byte, serverConfig []byte, ecdsaOk bool) (outCerts [][]byte, outSignature []byte) {
 	outCerts = make([][]byte, 0, 10)
 	for _, cert := range ps.server.Certificate.Certificate {
 		x509cert, err := x509.ParseCertificate(cert)

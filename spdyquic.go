@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"runtime"
 	"time"
 
 	"github.com/bradfitz/http2"
@@ -281,6 +282,7 @@ func (ps *ProofSource) GetProof(addr net.IP, hostname []byte, serverConfig []byt
 
 func (srv *QuicSpdyServer) Serve(conn *net.UDPConn, readChan chan udpData) error {
 	defer conn.Close()
+	runtime.LockOSThread()
 
 	listen_addr, err := net.ResolveUDPAddr("udp", conn.LocalAddr().String())
 	if err != nil {

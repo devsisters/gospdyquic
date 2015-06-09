@@ -24,17 +24,21 @@ import (
 )
 
 type SpdyStream struct {
+	closed        bool
 	stream_id     uint32
 	header        http.Header
 	header_parsed bool
 	buffer        *bytes.Buffer
 	server        *QuicSpdyServer
+	sessionFnChan chan func()
 }
 
 type spdyResponseWriter struct {
-	serverStream goquic.QuicStream
-	header       http.Header
-	wroteHeader  bool
+	serverStream  goquic.QuicStream
+	spdyStream    *SpdyStream
+	header        http.Header
+	wroteHeader   bool
+	sessionFnChan chan func()
 }
 
 type udpData struct {
@@ -51,18 +55,40 @@ func (w *spdyResponseWriter) Write(buffer []byte) (int, error) {
 		w.WriteHeader(http.StatusOK)
 	}
 
-	w.serverStream.WriteOrBufferData(buffer, false)
+	copiedBuffer := make([]byte, len(buffer))
+	copy(copiedBuffer, buffer)
+	w.sessionFnChan <- func() {
+		if w.spdyStream.closed {
+			return
+		}
+		w.serverStream.WriteOrBufferData(copiedBuffer, false)
+	}
 	return len(buffer), nil
+}
+
+func cloneHeader(h http.Header) http.Header {
+	h2 := make(http.Header, len(h))
+	for k, vv := range h {
+		vv2 := make([]string, len(vv))
+		copy(vv2, vv)
+		h2[k] = vv2
+	}
+	return h2
 }
 
 func (w *spdyResponseWriter) WriteHeader(statusCode int) {
 	if w.wroteHeader {
 		return
 	}
-	w.header.Set(":status", fmt.Sprintf("%d %s", statusCode, http.StatusText(statusCode))) // TODO(serialx): Do a proper status code return
-	w.header.Set(":version", "HTTP/1.1")
-
-	w.serverStream.WriteHeader(w.header, false)
+	copiedHeader := cloneHeader(w.header)
+	w.sessionFnChan <- func() {
+		copiedHeader.Set(":status", fmt.Sprintf("%d %s", statusCode, http.StatusText(statusCode))) // TODO(serialx): Do a proper status code return
+		copiedHeader.Set(":version", "HTTP/1.1")
+		if w.spdyStream.closed {
+			return
+		}
+		w.serverStream.WriteHeader(copiedHeader, false)
+	}
 	w.wroteHeader = true
 }
 
@@ -121,24 +147,35 @@ func (stream *SpdyStream) OnFinRead(quicStream goquic.QuicStream) {
 	// TODO(serialx): To buffered async read
 	req.Body = ioutil.NopCloser(stream.buffer)
 
-	w := &spdyResponseWriter{
-		serverStream: quicStream,
-		header:       make(http.Header),
-	}
-	if stream.server.Handler != nil {
-		stream.server.Handler.ServeHTTP(w, req)
-	} else {
-		http.DefaultServeMux.ServeHTTP(w, req)
-	}
+	go func() {
+		w := &spdyResponseWriter{
+			serverStream:  quicStream,
+			spdyStream:    stream,
+			header:        make(http.Header),
+			sessionFnChan: stream.sessionFnChan,
+		}
+		if stream.server.Handler != nil {
+			stream.server.Handler.ServeHTTP(w, req)
+		} else {
+			http.DefaultServeMux.ServeHTTP(w, req)
+		}
 
-	quicStream.WriteOrBufferData(make([]byte, 0), true)
+		stream.sessionFnChan <- func() {
+			if stream.closed {
+				return
+			}
+			quicStream.WriteOrBufferData(make([]byte, 0), true)
+		}
+	}()
 }
 
 func (stream *SpdyStream) OnClose(quicStream goquic.QuicStream) {
+	stream.closed = true
 }
 
 type SpdySession struct {
-	server *QuicSpdyServer
+	server        *QuicSpdyServer
+	sessionFnChan chan func()
 }
 
 func (s *SpdySession) CreateIncomingDataStream(stream_id uint32) goquic.DataStreamProcessor {
@@ -147,6 +184,7 @@ func (s *SpdySession) CreateIncomingDataStream(stream_id uint32) goquic.DataStre
 		header_parsed: false,
 		server:        s.server,
 		buffer:        new(bytes.Buffer),
+		sessionFnChan: s.sessionFnChan,
 	}
 	return stream
 }
@@ -165,6 +203,7 @@ type QuicSpdyServer struct {
 	numOfServers   int
 	Certificate    tls.Certificate
 	isSecure       bool
+	sessionFnChan  chan func()
 }
 
 func (srv *QuicSpdyServer) ListenAndServe() error {
@@ -289,12 +328,14 @@ func (srv *QuicSpdyServer) Serve(conn *net.UDPConn, readChan chan udpData) error
 		// TODO(serialx): Don't panic and keep calm...
 		panic(err)
 	}
-	createSpdySession := func() goquic.DataStreamCreator {
-		return &SpdySession{server: srv}
-	}
 
+	sessionFnChan := make(chan func())
 	writeChan := make(chan *goquic.WriteCallback)
 	proofSource := &ProofSource{server: srv}
+
+	createSpdySession := func() goquic.DataStreamCreator {
+		return &SpdySession{server: srv, sessionFnChan: sessionFnChan}
+	}
 
 	dispatcher := goquic.CreateQuicDispatcher(conn, createSpdySession, goquic.CreateTaskRunner(writeChan), proofSource, srv.isSecure)
 
@@ -312,6 +353,11 @@ func (srv *QuicSpdyServer) Serve(conn *net.UDPConn, readChan chan udpData) error
 			write.Callback()
 		case <-dispatcher.TaskRunner.WaitTimer():
 			dispatcher.TaskRunner.DoTasks()
+		case fn, ok := <-sessionFnChan:
+			if !ok {
+				break
+			}
+			fn()
 		}
 	}
 }

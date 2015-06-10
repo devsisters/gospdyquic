@@ -24,13 +24,14 @@ import (
 )
 
 type SpdyStream struct {
-	closed        bool
-	stream_id     uint32
-	header        http.Header
-	header_parsed bool
-	buffer        *bytes.Buffer
-	server        *QuicSpdyServer
-	sessionFnChan chan func()
+	closed          bool
+	stream_id       uint32
+	header          http.Header
+	header_parsed   bool
+	buffer          *bytes.Buffer
+	server          *QuicSpdyServer
+	sessionFnChan   chan func()
+	closeNotifyChan chan bool
 }
 
 type spdyResponseWriter struct {
@@ -90,6 +91,19 @@ func (w *spdyResponseWriter) WriteHeader(statusCode int) {
 		w.serverStream.WriteHeader(copiedHeader, false)
 	}
 	w.wroteHeader = true
+}
+
+func (w *spdyResponseWriter) CloseNotify() <-chan bool {
+	return w.spdyStream.closeNotify()
+}
+
+func (w *spdyResponseWriter) Flush() {
+	// TODO(serialx): Support flush
+	// Maybe it's not neccessary because QUIC sends packets in a paced interval.
+	// I cannot find any flush related functions in current QUIC code,
+	// and samples needing Flush seems to work fine.
+	// This functionality maybe needed in the future when we plan to buffer user
+	// writes in the Go side.
 }
 
 func (stream *SpdyStream) ProcessData(serverStream goquic.QuicStream, newBytes []byte) int {
@@ -170,7 +184,17 @@ func (stream *SpdyStream) OnFinRead(quicStream goquic.QuicStream) {
 }
 
 func (stream *SpdyStream) OnClose(quicStream goquic.QuicStream) {
+	if stream.closeNotifyChan != nil && !stream.closed {
+		stream.closeNotifyChan <- true
+	}
 	stream.closed = true
+}
+
+func (stream *SpdyStream) closeNotify() <-chan bool {
+	if stream.closeNotifyChan == nil {
+		stream.closeNotifyChan = make(chan bool, 1)
+	}
+	return stream.closeNotifyChan
 }
 
 type SpdySession struct {

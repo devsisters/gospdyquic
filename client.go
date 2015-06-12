@@ -76,19 +76,15 @@ func (q *QuicRoundTripper) RoundTrip(request *http.Request) (*http.Response, err
 	resp := &http.Response{}
 	resp.Status = recvHeader.Get(":status")
 	f := strings.SplitN(resp.Status, " ", 3)
-	if len(f) < 2 {
+	if len(f) < 1 {
 		return nil, &badStringError{"malformed HTTP response", resp.Status}
 	}
 	resp.StatusCode, err = strconv.Atoi(f[0])
 	if err != nil {
-		return nil, &badStringError{"malformed HTTP status code", f[1]}
+		return nil, &badStringError{"malformed HTTP status code", f[0]}
 	}
 
-	resp.Proto = recvHeader.Get(":version")
-	var ok bool
-	if resp.ProtoMajor, resp.ProtoMinor, ok = http.ParseHTTPVersion(resp.Proto); !ok {
-		return nil, &badStringError{"malformed HTTP version", resp.Proto}
-	}
+	resp.ProtoMajor, resp.ProtoMinor = 2, 0
 
 	resp.Header = recvHeader
 

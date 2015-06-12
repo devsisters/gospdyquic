@@ -16,11 +16,13 @@ import (
 	"net/http"
 	"net/url"
 	"runtime"
+	"strconv"
 	"time"
 
 	"github.com/bradfitz/http2"
 	"github.com/devsisters/goquic"
 	"github.com/devsisters/gospdyquic/spdy"
+	"github.com/vanillahsu/go_reuseport"
 )
 
 type SpdyStream struct {
@@ -83,8 +85,7 @@ func (w *spdyResponseWriter) WriteHeader(statusCode int) {
 	}
 	copiedHeader := cloneHeader(w.header)
 	w.sessionFnChan <- func() {
-		copiedHeader.Set(":status", fmt.Sprintf("%d %s", statusCode, http.StatusText(statusCode))) // TODO(serialx): Do a proper status code return
-		copiedHeader.Set(":version", "HTTP/1.1")
+		copiedHeader.Set(":status", strconv.Itoa(statusCode))
 		if w.spdyStream.closed {
 			return
 		}
@@ -236,55 +237,64 @@ func (srv *QuicSpdyServer) ListenAndServe() error {
 		addr = ":http"
 	}
 
-	conn, err := net.ListenPacket("udp", addr)
-	if err != nil {
-		return err
-	}
-	udp_conn, ok := conn.(*net.UDPConn)
-	if !ok {
-		return errors.New("ListenPacket did not return net.UDPConn")
-	}
-
 	chanArray := make([](chan udpData), srv.numOfServers)
+	connArray := make([](*net.UDPConn), srv.numOfServers)
 
+	// N consumers
 	for i := 0; i < srv.numOfServers; i++ {
-		// TODO(hodduc): This may cause blocking. Should implement intermiediate queue that buffers all inputs to avoid blocking on producer side.
-		channel := make(chan udpData, 100)
+		channel := make(chan udpData)
+
+		conn, err := reuseport.NewReusablePortPacketConn("udp4", addr)
+		if err != nil {
+			return err
+		}
+		udp_conn, ok := conn.(*net.UDPConn)
+		if !ok {
+			return errors.New("ListenPacket did not return net.UDPConn")
+		}
+		connArray[i] = udp_conn
+
 		go srv.Serve(udp_conn, channel)
 		chanArray[i] = channel
 	}
 
-	buf := make([]byte, 65535)
+	// N producers
+	readFunc := func(conn *net.UDPConn) {
+		buf := make([]byte, 65535)
 
-	for {
-		n, peer_addr, err := udp_conn.ReadFromUDP(buf)
-		if err != nil {
-			// TODO(serialx): Don't panic and keep calm...
-			panic(err)
+		for {
+			n, peer_addr, err := conn.ReadFromUDP(buf)
+			if err != nil {
+				// TODO(serialx): Don't panic and keep calm...
+				panic(err)
+			}
+
+			var connId uint64
+
+			switch buf[0] & 0xC {
+			case 0xC:
+				connId = binary.LittleEndian.Uint64(buf[1:9])
+			case 0x8:
+				connId = binary.LittleEndian.Uint64(buf[1:5])
+			case 0x4:
+				connId = binary.LittleEndian.Uint64(buf[1:2])
+			default:
+				connId = 0
+			}
+
+			buf_new := make([]byte, n)
+			copy(buf_new, buf[:n])
+
+			chanArray[connId%uint64(srv.numOfServers)] <- udpData{addr: peer_addr, buf: buf_new}
+			// TODO(hodduc): Minimize heap uses of buf. Consider using sync.Pool standard library to implement buffer pool.
 		}
-
-		var connId uint64
-
-		switch buf[0] & 0xC {
-		case 0xC:
-			connId = binary.LittleEndian.Uint64(buf[1:9])
-		case 0x8:
-			connId = binary.LittleEndian.Uint64(buf[1:5])
-		case 0x4:
-			connId = binary.LittleEndian.Uint64(buf[1:2])
-		default:
-			connId = 0
-		}
-
-		//		fmt.Println("ConnId", connId, " ---- > ", connId%numOfServers)
-
-		buf_new := make([]byte, n)
-		copy(buf_new, buf[:n])
-
-		chanArray[connId%uint64(srv.numOfServers)] <- udpData{addr: peer_addr, buf: buf_new}
-		// TODO(hodduc): Minimize heap uses of buf. Consider using sync.Pool standard library to implement buffer pool.
-		// TODO(hodduc): Smart Load Balancing
 	}
+
+	for i := 0; i < srv.numOfServers-1; i++ {
+		go readFunc(connArray[i])
+	}
+	readFunc(connArray[srv.numOfServers-1])
+	return nil
 }
 
 type ProofSource struct {

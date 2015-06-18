@@ -364,14 +364,13 @@ func (srv *QuicSpdyServer) Serve(conn *net.UDPConn, readChan chan udpData) error
 	}
 
 	sessionFnChan := make(chan func())
-	writeChan := make(chan *goquic.WriteCallback)
 	proofSource := &ProofSource{server: srv}
 
 	createSpdySession := func() goquic.DataStreamCreator {
 		return &SpdySession{server: srv, sessionFnChan: sessionFnChan}
 	}
 
-	dispatcher := goquic.CreateQuicDispatcher(conn, createSpdySession, goquic.CreateTaskRunner(writeChan), proofSource, srv.isSecure)
+	dispatcher := goquic.CreateQuicDispatcher(conn, createSpdySession, goquic.CreateTaskRunner(), proofSource, srv.isSecure)
 
 	for {
 		select {
@@ -380,11 +379,6 @@ func (srv *QuicSpdyServer) Serve(conn *net.UDPConn, readChan chan udpData) error
 				break
 			}
 			dispatcher.ProcessPacket(listen_addr, result.addr, result.buf)
-		case write, ok := <-writeChan:
-			if !ok {
-				break
-			}
-			write.Callback()
 		case <-dispatcher.TaskRunner.WaitTimer():
 			dispatcher.TaskRunner.DoTasks()
 		case fn, ok := <-sessionFnChan:

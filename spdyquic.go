@@ -44,11 +44,6 @@ type spdyResponseWriter struct {
 	sessionFnChan chan func()
 }
 
-type udpData struct {
-	addr *net.UDPAddr
-	buf  []byte
-}
-
 func (w *spdyResponseWriter) Header() http.Header {
 	return w.header
 }
@@ -237,25 +232,35 @@ func (srv *QuicSpdyServer) ListenAndServe() error {
 		addr = ":http"
 	}
 
-	chanArray := make([](chan udpData), srv.numOfServers)
+	readChanArray := make([](chan goquic.UdpData), srv.numOfServers)
+	writerArray := make([](*goquic.ServerWriter), srv.numOfServers)
 	connArray := make([](*net.UDPConn), srv.numOfServers)
 
 	// N consumers
 	for i := 0; i < srv.numOfServers; i++ {
-		channel := make(chan udpData)
+		rch := make(chan goquic.UdpData, 500)
+		wch := make(chan goquic.UdpData, 500) // TODO(serialx, hodduc): Optimize buffer size
 
 		conn, err := reuseport.NewReusablePortPacketConn("udp4", addr)
 		if err != nil {
 			return err
 		}
+		defer conn.Close()
+
 		udp_conn, ok := conn.(*net.UDPConn)
 		if !ok {
 			return errors.New("ListenPacket did not return net.UDPConn")
 		}
 		connArray[i] = udp_conn
 
-		go srv.Serve(udp_conn, channel)
-		chanArray[i] = channel
+		listen_addr, err := net.ResolveUDPAddr("udp", udp_conn.LocalAddr().String())
+		if err != nil {
+			return err
+		}
+
+		readChanArray[i] = rch
+		writerArray[i] = goquic.NewServerWriter(wch)
+		go srv.Serve(listen_addr, writerArray[i], readChanArray[i])
 	}
 
 	// N producers
@@ -285,14 +290,24 @@ func (srv *QuicSpdyServer) ListenAndServe() error {
 			buf_new := make([]byte, n)
 			copy(buf_new, buf[:n])
 
-			chanArray[connId%uint64(srv.numOfServers)] <- udpData{addr: peer_addr, buf: buf_new}
+			readChanArray[connId%uint64(srv.numOfServers)] <- goquic.UdpData{Addr: peer_addr, Buf: buf_new}
 			// TODO(hodduc): Minimize heap uses of buf. Consider using sync.Pool standard library to implement buffer pool.
 		}
 	}
 
+	// N consumers
+	writeFunc := func(conn *net.UDPConn, writer *goquic.ServerWriter) {
+		for dat := range writer.Ch {
+			conn.WriteToUDP(dat.Buf, dat.Addr)
+		}
+	}
+
 	for i := 0; i < srv.numOfServers-1; i++ {
+		go writeFunc(connArray[i], writerArray[i])
 		go readFunc(connArray[i])
 	}
+
+	go writeFunc(connArray[srv.numOfServers-1], writerArray[srv.numOfServers-1])
 	readFunc(connArray[srv.numOfServers-1])
 	return nil
 }
@@ -353,15 +368,8 @@ func (ps *ProofSource) GetProof(addr net.IP, hostname []byte, serverConfig []byt
 	return outCerts, outSignature
 }
 
-func (srv *QuicSpdyServer) Serve(conn *net.UDPConn, readChan chan udpData) error {
-	defer conn.Close()
+func (srv *QuicSpdyServer) Serve(listen_addr *net.UDPAddr, writer *goquic.ServerWriter, readChan chan goquic.UdpData) error {
 	runtime.LockOSThread()
-
-	listen_addr, err := net.ResolveUDPAddr("udp", conn.LocalAddr().String())
-	if err != nil {
-		// TODO(serialx): Don't panic and keep calm...
-		panic(err)
-	}
 
 	sessionFnChan := make(chan func())
 	proofSource := &ProofSource{server: srv}
@@ -370,7 +378,7 @@ func (srv *QuicSpdyServer) Serve(conn *net.UDPConn, readChan chan udpData) error
 		return &SpdySession{server: srv, sessionFnChan: sessionFnChan}
 	}
 
-	dispatcher := goquic.CreateQuicDispatcher(conn, createSpdySession, goquic.CreateTaskRunner(), proofSource, srv.isSecure)
+	dispatcher := goquic.CreateQuicDispatcher(writer, createSpdySession, goquic.CreateTaskRunner(), proofSource, srv.isSecure)
 
 	for {
 		select {
@@ -378,7 +386,7 @@ func (srv *QuicSpdyServer) Serve(conn *net.UDPConn, readChan chan udpData) error
 			if !ok {
 				break
 			}
-			dispatcher.ProcessPacket(listen_addr, result.addr, result.buf)
+			dispatcher.ProcessPacket(listen_addr, result.Addr, result.Buf)
 		case <-dispatcher.TaskRunner.WaitTimer():
 			dispatcher.TaskRunner.DoTasks()
 		case fn, ok := <-sessionFnChan:

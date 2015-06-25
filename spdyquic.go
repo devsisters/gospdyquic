@@ -198,7 +198,7 @@ type SpdySession struct {
 	sessionFnChan chan func()
 }
 
-func (s *SpdySession) CreateIncomingDataStream(stream_id uint32) goquic.DataStreamProcessor {
+func (s *SpdySession) CreateIncomingDynamicStream(stream_id uint32) goquic.DataStreamProcessor {
 	stream := &SpdyStream{
 		stream_id:     stream_id,
 		header_parsed: false,
@@ -209,7 +209,7 @@ func (s *SpdySession) CreateIncomingDataStream(stream_id uint32) goquic.DataStre
 	return stream
 }
 
-func (s *SpdySession) CreateOutgoingDataStream() goquic.DataStreamProcessor {
+func (s *SpdySession) CreateOutgoingDynamicStream() goquic.DataStreamProcessor {
 	// NOT SUPPORTED
 	return nil
 }

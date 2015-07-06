@@ -235,6 +235,8 @@ func (srv *QuicSpdyServer) ListenAndServe() error {
 	readChanArray := make([](chan goquic.UdpData), srv.numOfServers)
 	writerArray := make([](*goquic.ServerWriter), srv.numOfServers)
 	connArray := make([](*net.UDPConn), srv.numOfServers)
+	proofSource := &ProofSource{server: srv}
+	cryptoConfig := goquic.InitCryptoConfig(goquic.NewProofSource(proofSource))
 
 	// N consumers
 	for i := 0; i < srv.numOfServers; i++ {
@@ -260,7 +262,7 @@ func (srv *QuicSpdyServer) ListenAndServe() error {
 
 		readChanArray[i] = rch
 		writerArray[i] = goquic.NewServerWriter(wch)
-		go srv.Serve(listen_addr, writerArray[i], readChanArray[i])
+		go srv.Serve(listen_addr, writerArray[i], readChanArray[i], cryptoConfig)
 	}
 
 	// N producers
@@ -316,6 +318,10 @@ type ProofSource struct {
 	server *QuicSpdyServer
 }
 
+func (ps *ProofSource) IsSecure() bool {
+	return ps.server.isSecure
+}
+
 func (ps *ProofSource) GetProof(addr net.IP, hostname []byte, serverConfig []byte, ecdsaOk bool) (outCerts [][]byte, outSignature []byte) {
 	outCerts = make([][]byte, 0, 10)
 	for _, cert := range ps.server.Certificate.Certificate {
@@ -368,17 +374,16 @@ func (ps *ProofSource) GetProof(addr net.IP, hostname []byte, serverConfig []byt
 	return outCerts, outSignature
 }
 
-func (srv *QuicSpdyServer) Serve(listen_addr *net.UDPAddr, writer *goquic.ServerWriter, readChan chan goquic.UdpData) error {
+func (srv *QuicSpdyServer) Serve(listen_addr *net.UDPAddr, writer *goquic.ServerWriter, readChan chan goquic.UdpData, cryptoConfig *goquic.ServerCryptoConfig) error {
 	runtime.LockOSThread()
 
 	sessionFnChan := make(chan func())
-	proofSource := &ProofSource{server: srv}
 
 	createSpdySession := func() goquic.DataStreamCreator {
 		return &SpdySession{server: srv, sessionFnChan: sessionFnChan}
 	}
 
-	dispatcher := goquic.CreateQuicDispatcher(writer, createSpdySession, goquic.CreateTaskRunner(), proofSource, srv.isSecure)
+	dispatcher := goquic.CreateQuicDispatcher(writer, createSpdySession, goquic.CreateTaskRunner(), cryptoConfig)
 
 	for {
 		select {
